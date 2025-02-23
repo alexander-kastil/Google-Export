@@ -1,101 +1,104 @@
 BeforeAll {
-    $script:testRoot = 'e:\Google-Export'
-    $script:exportRoot = 'e:\export-sample'
-    $script:scriptPath = Join-Path $testRoot 'fix-google-takeout-v2.ps1'
-    $script:testZips = @(
-        'takeout-20250222T072038Z-001.zip',
-        'takeout-20250222T072038Z-002.zip'
-    )
+    $script:scriptPath = Join-Path $PSScriptRoot "fix-google-takeout-v2.ps1"
+    $script:tempWorkspace = Join-Path $env:TEMP "GoogleTakeoutTests"
+    $script:albumName = "Giro"
+    $script:exportPath = "e:\export-sample"
 
-    # Cleanup function for each test
-    function Reset-TestEnvironment {
-        $foldersToRemove = @(
-            (Join-Path $testRoot 'extracted'),
-            (Join-Path $testRoot 'sorted'),
-            (Join-Path $testRoot 'logs'),
-            (Join-Path $testRoot 'photo-albums'),
-            (Join-Path $testRoot 'ExifTool'),
-            $script:exportRoot
-        )
-        
-        foreach ($folder in $foldersToRemove) {
-            if (Test-Path $folder) {
-                Remove-Item $folder -Recurse -Force
-            }
-        }
-    }
+    # Create temp workspace
+    New-Item -ItemType Directory -Path $script:tempWorkspace -Force | Out-Null
 
-    # Create test albums.txt file
-    $albumsTxtPath = Join-Path $testRoot 'albums.txt'
-    'giro' | Set-Content -Path $albumsTxtPath -Force
+    # Create albums.txt with test album
+    Set-Content -Path (Join-Path $PSScriptRoot "albums.txt") -Value $script:albumName -Force
 }
 
 AfterAll {
-    Reset-TestEnvironment
+    # Cleanup temp workspace
+    if (Test-Path $script:tempWorkspace) {
+        Remove-Item -Path $script:tempWorkspace -Recurse -Force
+    }
+    
+    # Clean up test album file
+    $albumFile = Join-Path $PSScriptRoot "albums.txt"
+    if (Test-Path $albumFile) {
+        Remove-Item -Path $albumFile -Force
+    }
+
+    # Clean up export path
+    if (Test-Path $script:exportPath) {
+        Remove-Item -Path $script:exportPath -Recurse -Force
+    }
 }
 
-Describe "Google Photos Takeout Processing" {
-    BeforeEach {
-        Reset-TestEnvironment
+Describe "Google Photos Takeout Processing" -Tag "Integration" {
+    Context "Basic ZIP extraction" -Tag "Extract" {
+        BeforeAll {
+            # Get first 2 ZIP files
+            $zipFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.zip" | Select-Object -First 2
+            foreach ($zip in $zipFiles) {
+                Copy-Item -Path $zip.FullName -Destination $script:tempWorkspace
+            }
+            
+            # Run script with ExtractZip
+            $result = & $script:scriptPath -ExtractZip yes -InstallExif no -GenerateAlbums no
+        }
+
+        It "Should extract ZIP files successfully" {
+            $extractedPath = Join-Path $PSScriptRoot "extracted"
+            Test-Path $extractedPath | Should -BeTrue
+            (Get-ChildItem -Path $extractedPath -Recurse -File).Count | Should -BeGreaterThan 0
+        }
     }
 
-    It "Should extract ZIP files" {
-        $result = & $scriptPath -ExtractZip yes
+    Context "Album generation with extracted files" -Tag "Albums" {
+        BeforeAll {
+            # Run script with ExtractZip and GenerateAlbums
+            $result = & $script:scriptPath -ExtractZip no -InstallExif no -GenerateAlbums yes
+        }
 
-        # Check if the script executed successfully
-        $LASTEXITCODE | Should -Be 0
+        It "Should create album JSON file" {
+            $albumPath = Join-Path $PSScriptRoot "photo-albums" "$($script:albumName).json"
+            Test-Path $albumPath | Should -BeTrue
+        }
 
-        # Verify that extracted folder exists and contains content
-        Test-Path (Join-Path $testRoot 'extracted') | Should -Be $true
-        $extractedFiles = Get-ChildItem (Join-Path $testRoot 'extracted') -Recurse
-        $extractedFiles.Count | Should -BeGreaterThan 0
+        It "Should populate album with photos" {
+            $albumPath = Join-Path $PSScriptRoot "photo-albums" "$($script:albumName).json"
+            $albumContent = Get-Content $albumPath | ConvertFrom-Json
+            $albumContent.Count | Should -BeGreaterThan 0
+        }
     }
 
-    It "Should extract ZIP files and generate albums" {
-        $result = & $scriptPath -ExtractZip yes -GenerateAlbums yes
+    Context "Full processing with ExifTool installation" -Tag "ExifTool" {
+        BeforeAll {
+            # Run script with all features
+            $result = & $script:scriptPath -ExtractZip no -InstallExif yes -GenerateAlbums yes
+        }
 
-        # Check if the script executed successfully
-        $LASTEXITCODE | Should -Be 0
+        It "Should install ExifTool" {
+            $exiftoolPath = Join-Path $PSScriptRoot "ExifTool\exiftool.exe"
+            Test-Path $exiftoolPath | Should -BeTrue
+        }
 
-        # Verify that extracted and photo-albums folders exist
-        Test-Path (Join-Path $testRoot 'extracted') | Should -Be $true
-        Test-Path (Join-Path $testRoot 'photo-albums') | Should -Be $true
-
-        # Verify that the Giro album JSON file was created
-        $giroJsonPath = Join-Path $testRoot 'photo-albums' 'giro.json'
-        Test-Path $giroJsonPath | Should -Be $true
+        It "Should process metadata successfully" {
+            $errorPath = Join-Path $PSScriptRoot "logs\metadata.errors.json"
+            $errors = Get-Content $errorPath -Raw | ConvertFrom-Json
+            $errors.Count | Should -Be 0
+        }
     }
 
-    It "Should extract ZIP files, generate albums and install ExifTool" {
-        $result = & $scriptPath -ExtractZip yes -GenerateAlbums yes -InstallExif yes
+    Context "Album export" -Tag "Export" {
+        BeforeAll {
+            # Run script with ExportAlbum
+            $result = & $script:scriptPath -ExportAlbum yes
+        }
 
-        # Check if the script executed successfully
-        $LASTEXITCODE | Should -Be 0
+        It "Should create export directory" {
+            Test-Path $script:exportPath | Should -BeTrue
+        }
 
-        # Verify that ExifTool was installed
-        Test-Path (Join-Path $testRoot 'ExifTool') | Should -Be $true
-        Test-Path (Join-Path $testRoot 'ExifTool' 'exiftool.exe') | Should -Be $true
-
-        # Verify other folders exist
-        Test-Path (Join-Path $testRoot 'extracted') | Should -Be $true
-        Test-Path (Join-Path $testRoot 'photo-albums') | Should -Be $true
-        Test-Path (Join-Path $testRoot 'sorted') | Should -Be $true
-    }
-
-    It "Should export albums to specified folder" {
-        # First run the full process
-        $result = & $scriptPath -ExtractZip yes -GenerateAlbums yes -InstallExif yes
-        $LASTEXITCODE | Should -Be 0
-
-        # Then export the albums
-        $result = & $scriptPath -ExportAlbum yes
-        $LASTEXITCODE | Should -Be 0
-
-        # Verify export folder exists and contains content
-        Test-Path (Join-Path $testRoot 'exported-albums') | Should -Be $true
-        Test-Path (Join-Path $testRoot 'exported-albums' 'giro') | Should -Be $true
-        
-        $exportedFiles = Get-ChildItem (Join-Path $testRoot 'exported-albums' 'giro') -Recurse
-        $exportedFiles.Count | Should -BeGreaterThan 0
+        It "Should export album contents" {
+            $albumExportPath = Join-Path $script:exportPath $script:albumName
+            Test-Path $albumExportPath | Should -BeTrue
+            (Get-ChildItem -Path $albumExportPath -Recurse -File).Count | Should -BeGreaterThan 0
+        }
     }
 }

@@ -888,3 +888,14 @@ catch {
     Write-Error "Script failed: $_"
     exit 1
 }
+
+function Write-JsonError {
+    param (
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+        [Parameter(Mandatory)]
+        [array]$ErrorItems
+    )
+    
+    ConvertTo-Json -InputObject $ErrorItems | Set-Content -Path $FilePath -Encoding UTF8
+}
