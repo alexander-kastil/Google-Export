@@ -1,4 +1,4 @@
-# Google Photos Takeout Fixer
+# Google Photos Takeout Matadata Fixer
 
 > This project was prompted by [Alexander Kastil](https://www.linkedin.com/in/alexander-kastil-3bb26511a/) and implemented using the Agentic Preview of GitHub Copilot Edits with Claude 3.5 Sonnet as the underlying AI model.
 
