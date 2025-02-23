@@ -116,17 +116,25 @@ $script:generateAlbumsValue = $GenerateAlbums
 
 function Initialize-Folders {
     # Create required folders first
-    $null = New-Item -ItemType Directory -Path @(
+    $foldersToCreate = @(
         $script:extractedPath,
         $script:sortedPath,
         $script:logsPath,
         $script:albumsPath
-    ) -Force
+    )
+
+    foreach ($folder in $foldersToCreate) {
+        if (-not (Test-Path $folder)) {
+            $null = New-Item -ItemType Directory -Path $folder -Force
+        }
+    }
 
     # Initialize error logging files with empty arrays
     @($script:metadataErrorsPath, $script:sortingErrorsPath, $script:duplicateErrorsPath) | 
     ForEach-Object { 
-        "[]" | Set-Content -Path $_ -Encoding UTF8
+        if (-not (Test-Path $_)) {
+            "[]" | Set-Content -Path $_ -Encoding UTF8 -Force
+        }
     }
 
     # Initialize albums if needed
@@ -682,6 +690,9 @@ $script:sortingErrorsPath = Join-Path -Path $script:logsPath -ChildPath "sorting
 $script:duplicateErrorsPath = Join-Path -Path $script:logsPath -ChildPath "duplicate.errors.json"
 $script:albums = @{}
 $script:generateAlbums = 'no'
+
+# Initialize required folders and files
+Initialize-Folders
 
 # Handle ExifTool installation based on parameter or user input
 if (-not $exifToolCommand -and -not (Test-Path $localExifTool)) {
