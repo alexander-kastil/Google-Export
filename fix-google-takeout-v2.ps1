@@ -130,15 +130,24 @@ function Initialize-Folders {
     }
 
     # Initialize error logging files with empty arrays
-    @($script:metadataErrorsPath, $script:sortingErrorsPath, $script:duplicateErrorsPath) | 
-    ForEach-Object { 
-        if (-not (Test-Path $_)) {
-            "[]" | Set-Content -Path $_ -Encoding UTF8 -Force
+    $errorFiles = @(
+        $script:metadataErrorsPath,
+        $script:sortingErrorsPath,
+        $script:duplicateErrorsPath
+    )
+
+    foreach ($errorFile in $errorFiles) {
+        $errorDir = Split-Path -Path $errorFile -Parent
+        if (-not (Test-Path $errorDir)) {
+            $null = New-Item -ItemType Directory -Path $errorDir -Force
+        }
+        if (-not (Test-Path $errorFile)) {
+            "[]" | Set-Content -Path $errorFile -Encoding UTF8 -Force
         }
     }
 
     # Initialize albums if needed
-    if ($script:generateAlbums -eq 'yes') {
+    if ($script:generateAlbumbsValue -eq 'yes') {
         Import-Albums
     }
 }
@@ -483,6 +492,9 @@ function Move-ToYearFolders {
             $trackAlbums = $using:TrackAlbums
             $albums = $using:Albums
             $scriptRoot = $using:scriptRoot
+            $errors = $using:errors
+            $duplicates = $using:duplicates
+            $albumUpdates = $using:albumUpdates
             
             try {
                 $currentFolder = Split-Path (Split-Path $_.FullName -Parent) -Leaf
@@ -512,7 +524,7 @@ function Move-ToYearFolders {
                         $destPath = Join-Path $yearPath $newFileName
                         
                         if (-not (Test-Path $destPath)) {
-                            $(using:duplicates).Add([PSCustomObject]@{
+                            $duplicates.Add([PSCustomObject]@{
                                 Path = $_.FullName
                                 Message = "Duplicate file renamed to: $newFileName"
                             })
@@ -530,7 +542,7 @@ function Move-ToYearFolders {
                             $relativePath = $yearPath.Replace($scriptRoot, '').TrimStart('\')
                             $fileName = [System.IO.Path]::GetFileName($destPath)
                             
-                            $(using:albumUpdates).Add([PSCustomObject]@{
+                            $albumUpdates.Add([PSCustomObject]@{
                                 Album = $folderNameLower
                                 Item = [PSCustomObject]@{
                                     name = $fileName
@@ -541,14 +553,14 @@ function Move-ToYearFolders {
                         }
                     }
                 } else {
-                    $(using:errors).Add([PSCustomObject]@{
+                    $errors.Add([PSCustomObject]@{
                         Path = $_.FullName
                         Message = "No date found in EXIF data"
                     })
                 }
             }
             catch {
-                $(using:errors).Add([PSCustomObject]@{
+                $errors.Add([PSCustomObject]@{
                     Path = $_.FullName
                     Message = "Error sorting file: $_"
                 })
