@@ -1,0 +1,6 @@
+*.zip
+albums.txt
+logs/
+photo-albums/
+extracted/
+sorted/
