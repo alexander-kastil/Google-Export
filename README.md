@@ -78,17 +78,17 @@ The main script provides a comprehensive solution for processing Google Photos T
 
 ```
 workspace/
-├── extracted/           # Extracted Takeout contents
-├── sorted/             # Photos organized by year
+├── extracted/               # Extracted Takeout contents
+├── sorted/                  # Photos organized by year
 │   ├── 2020/
 │   ├── 2021/
 │   └── 2022/
-├── photo-albums/       # Album JSON files
-├── logs/              # Error logs
+├── photo-albums/            # Album JSON files
+├── logs/                    # Error logs
 │   ├── metadata.errors.json
 │   ├── sorting.errors.json
 │   └── duplicate.errors.json
-└── exported-albums/    # Album exports (when using -ExportAlbum)
+└── exported-albums/         # Album exports (when using -ExportAlbum)
 ```
 
 ## Testing
