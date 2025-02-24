@@ -104,7 +104,7 @@ The project includes a test file `fix-google-takeout-v2.tests.ps1` that verifies
 Run the tests using Pester:
 
 ```powershell
-Invoke-Pester .\fix-google-takeout-v2.tests.ps1 -Tag "Integration"
+Invoke-Pester .\fix-google-takeout-v2.tests.ps1 
 ```
 
 ## Example Usage
