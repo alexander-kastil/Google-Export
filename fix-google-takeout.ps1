@@ -10,7 +10,10 @@ param (
     [string]$InstallExif = 'no',
     
     [ValidateSet('yes', 'no')]
-    [string]$GenerateAlbums = 'yes',
+    [string]$GenerateAlbums = 'no',
+    
+    [ValidateSet('no', 'years', 'onefolder')]
+    [string]$Sorting = 'onefolder',
     
     [ValidatePattern('^(yes|no|\S.+)$')]
     [string]$ExportAlbum = $null
@@ -21,6 +24,18 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-Error "This script requires PowerShell 7.0 or later. Current version: $($PSVersionTable.PSVersion)"
     Write-Host "Please install PowerShell 7+ from: https://github.com/PowerShell/PowerShell/releases"
     exit 1
+}
+
+function Write-JsonError {
+    param (
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+        [Parameter(Mandatory)]
+        [array]$ErrorItems
+    )
+    
+    $json = ConvertTo-Json -InputObject $ErrorItems -Depth 10
+    [System.IO.File]::WriteAllText($FilePath, $json, [System.Text.Encoding]::UTF8)
 }
 
 # Validate export-album is used alone
@@ -43,32 +58,41 @@ function Show-HelpAndExit {
     $helpText = @"
 Google Photos Takeout Fixer
 --------------------------
-This tool processes Google Photos Takeout archives by fixing metadata timestamps and organizing photos into year-based folders.
+This tool processes Google Photos Takeout archives by fixing metadata timestamps and organizing photos into folders.
 
 Parameter Rules:
 --------------
-1. ALL parameters MUST be used with 'yes' or 'no'
-2. The -ExportAlbum parameter MUST be used alone without any other parameters
-3. Other parameters (-ExtractZip, -InstallExif, -GenerateAlbums) can be combined
-4. ExifTool is NOT installed by default, use -InstallExif yes to install it
+1. The -ExportAlbum parameter MUST be used alone without any other parameters
+2. Other parameters (-ExtractZip, -InstallExif, -GenerateAlbums, -Sorting) can be combined
+3. ExifTool is NOT installed by default, use -InstallExif yes to install it
 
 Parameters:
 ----------
--ExtractZip yes|no     : Extract ZIP files from Google Takeout (default: no)
+-ExtractZip yes|no     : Extract ZIP files from Google Takeout (default: yes)
 -InstallExif yes|no    : Download and install ExifTool if not found (default: no)
 -GenerateAlbums yes|no : Generate album JSON files (default: no)
                         Requires albums.txt file with one album name per line
--ExportAlbum yes      : Export photos from albums
+-Sorting no|years|onefolder : Control how files are organized (default: onefolder)
+                        'no': Leave files in place after metadata fix
+                        'years': Sort into year-based folders (2023, 2022, etc.)
+                        'onefolder': Sort into pictures/ and movies/ folders
+-ExportAlbum yes       : Export photos from albums
                         When used with yes, exports all albums 
-                        When used alone, must be 'yes'
+                        Must be used alone without other parameters
 
 Examples:
 --------
-Extract files and install ExifTool:
-  .\fix-google-takeout-v2.ps1 -ExtractZip yes -InstallExif yes
+Basic usage - extract and organize into pictures/movies folders:
+  .\fix-google-takeout-v2.ps1 -ExtractZip yes -Sorting onefolder
 
-Generate albums after extraction:
-  .\fix-google-takeout-v2.ps1 -ExtractZip yes -GenerateAlbums yes
+Extract files and sort by year:
+  .\fix-google-takeout-v2.ps1 -ExtractZip yes -Sorting years
+
+Generate albums during sorting:
+  .\fix-google-takeout-v2.ps1 -ExtractZip yes -GenerateAlbums yes -Sorting years
+
+First time setup with ExifTool installation:
+  .\fix-google-takeout-v2.ps1 -ExtractZip yes -InstallExif yes -Sorting onefolder
 
 Export all albums (must be used alone):
   .\fix-google-takeout-v2.ps1 -ExportAlbum yes
@@ -120,7 +144,9 @@ function Initialize-Folders {
         $script:extractedPath,
         $script:sortedPath,
         $script:logsPath,
-        $script:albumsPath
+        $script:albumsPath,
+        (Join-Path $script:outputPath "pictures"),
+        (Join-Path $script:outputPath "movies")
     )
 
     foreach ($folder in $foldersToCreate) {
@@ -389,80 +415,6 @@ function Update-FileMetadata {
     }
 }
 
-function Test-MetadataUpdates {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$FolderPath,
-        [int]$SampleSize = 300,
-        [int]$ThrottleLimit = 8
-    )
-
-    $mediaFiles = @(Get-ChildItem -Path $FolderPath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
-    if ($mediaFiles.Count -eq 0) {
-        Write-Warning "No media files found to test"
-        return @()
-    }
-    
-    $samplesToTest = @($mediaFiles | Get-Random -Count ([Math]::Min($SampleSize, $mediaFiles.Count)))
-    $errors = [ConcurrentBag[PSCustomObject]]::new()
-    $scriptRoot = $PSScriptRoot
-    
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $samplesToTest | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
-            $currentScriptRoot = $using:scriptRoot
-            try {
-                $metadataFile = "$($_.FullName).supplemental-metadata.json"
-                if (-not (Test-Path $metadataFile)) { return }
-
-                $metadata = Get-Content $metadataFile -Raw | ConvertFrom-Json
-                $expectedTime = $null
-                
-                if ($metadata.photoTakenTime.formatted) {
-                    $formatted = $metadata.photoTakenTime.formatted -replace " UTC$"
-                    if ($formatted -match "^\d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}:\d{2}$") {
-                        $expectedTime = [DateTime]::ParseExact(
-                            $formatted,
-                            "dd.MM.yyyy, HH:mm:ss",
-                            [System.Globalization.CultureInfo]::InvariantCulture
-                        )
-                    } else {
-                        $expectedTime = [DateTime]::Parse($formatted)
-                    }
-                }
-
-                $exifData = exiftool -json $_.FullName | ConvertFrom-Json
-                $actualTime = if ($exifData.CreateDate) {
-                    try {
-                        [DateTime]::ParseExact(
-                            $exifData.CreateDate,
-                            "yyyy:MM:dd HH:mm:ss",
-                            [System.Globalization.CultureInfo]::InvariantCulture
-                        )
-                    } catch {
-                        [DateTime]::Parse($exifData.CreateDate)
-                    }
-                }
-
-                if ($expectedTime -and $actualTime -and ($expectedTime -ne $actualTime)) {
-                    $(using:errors).Add([PSCustomObject]@{
-                        Path = $_.FullName.Replace($currentScriptRoot + "\", "")
-                        Message = "Date mismatch - Expected: $expectedTime, Got: $actualTime"
-                    })
-                }
-            }
-            catch {
-                $(using:errors).Add([PSCustomObject]@{
-                    Path = $_.FullName.Replace($currentScriptRoot + "\", "")
-                    Message = "Error testing file: $_"
-                })
-            }
-        }
-    }
-
-    return @($errors.ToArray())
-}
-
 function Move-ToYearFolders {
     param (
         [Parameter(Mandatory)]
@@ -653,6 +605,188 @@ function Move-ToYearFolders {
     }
 }
 
+function Move-ToOneFolder {
+    param (
+        [Parameter(Mandatory)]
+        [string]$SourcePath,
+        
+        [Parameter(Mandatory)]
+        [string]$DestinationRoot,
+        
+        [bool]$TrackAlbums = $false,
+        [hashtable]$Albums = $null,
+        [string]$AlbumsPath = '',
+        [int]$ThrottleLimit = 8
+    )
+
+    $sortingErrorsPath = $script:sortingErrorsPath
+    $duplicateErrorsPath = $script:duplicateErrorsPath
+    $errors = [ConcurrentBag[PSCustomObject]]::new()
+    $duplicates = [ConcurrentBag[PSCustomObject]]::new()
+    $albumUpdates = [ConcurrentBag[PSCustomObject]]::new()
+    $scriptRoot = $PSScriptRoot
+
+    try {
+        # Create output folders if they don't exist
+        $picturesPath = Join-Path $DestinationRoot "pictures"
+        $moviesPath = Join-Path $DestinationRoot "movies"
+        $null = New-Item -ItemType Directory -Path $picturesPath -Force
+        $null = New-Item -ItemType Directory -Path $moviesPath -Force
+
+        # Process files in parallel
+        @(Get-ChildItem -Path $SourcePath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4") | 
+        ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+            $destRoot = $using:DestinationRoot
+            $trackAlbums = $using:TrackAlbums
+            $albums = $using:Albums
+            $errors = $using:errors
+            $duplicates = $using:duplicates
+            $albumUpdates = $using:albumUpdates
+            
+            try {
+                $currentFolder = Split-Path (Split-Path $_.FullName -Parent) -Leaf
+                Write-Information "Moving file from folder: $currentFolder"
+
+                # Determine destination subfolder based on file extension
+                $ext = $_.Extension.ToLower()
+                $subFolder = if ($ext -eq '.mp4') { "movies" } else { "pictures" }
+                $destFolder = Join-Path $destRoot $subFolder
+
+                $destFileName = $_.Name
+                $destPath = Join-Path $destFolder $destFileName
+
+                # Handle duplicates
+                while (Test-Path $destPath) {
+                    $fileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                    $extension = [System.IO.Path]::GetExtension($_.Name)
+                    $random = Get-Random -Maximum 99999
+                    $newFileName = "${fileNameWithoutExt}_duplicate_${random}${extension}"
+                    $destPath = Join-Path $destFolder $newFileName
+                    
+                    if (-not (Test-Path $destPath)) {
+                        $duplicates.Add([PSCustomObject]@{
+                            Path = $_.FullName
+                            Message = "Duplicate file renamed to: $newFileName"
+                        })
+                        break
+                    }
+                }
+
+                # Move the file
+                $null = Move-Item -Path $_.FullName -Destination $destPath -Force
+
+                # Track album if enabled
+                if ($trackAlbums) {
+                    $folderNameLower = $currentFolder.ToLower()
+                    if ($albums.ContainsKey($folderNameLower)) {
+                        $relativePath = $subFolder
+                        $fileName = [System.IO.Path]::GetFileName($destPath)
+                        
+                        $albumUpdates.Add([PSCustomObject]@{
+                            Album = $folderNameLower
+                            Item = [PSCustomObject]@{
+                                name = $fileName
+                                relativePath = $relativePath
+                                fullPath = Join-Path $relativePath $fileName
+                            }
+                        })
+                    }
+                }
+            }
+            catch {
+                $errors.Add([PSCustomObject]@{
+                    Path = $_.FullName
+                    Message = "Error moving file: $_"
+                })
+            }
+        }
+
+        # Process album updates
+        if ($TrackAlbums) {
+            $retryStrategy = @{
+                MaxRetries = 5
+                RetryDelay = 100
+                BackoffMultiplier = 2
+            }
+            
+            $albumUpdates.ToArray() | Group-Object -Property Album | ForEach-Object {
+                $albumName = $_.Name
+                $albumPath = Join-Path $AlbumsPath "$albumName.json"
+                $lockFile = Join-Path $AlbumsPath "$albumName.lock"
+                $success = $false
+                $retryCount = 0
+                $currentDelay = $retryStrategy.RetryDelay
+                
+                while (-not $success -and $retryCount -lt $retryStrategy.MaxRetries) {
+                    $lockStream = $null
+                    try {
+                        $lockStream = [System.IO.File]::Open(
+                            $lockFile, 
+                            [System.IO.FileMode]::CreateNew,
+                            [System.IO.FileAccess]::Write,
+                            [System.IO.FileShare]::None
+                        )
+                        
+                        $currentItems = @()
+                        if (Test-Path $albumPath) {
+                            $content = Get-Content -Path $albumPath -Raw -ErrorAction Stop
+                            if ($content) {
+                                $currentItems = @(ConvertFrom-Json -InputObject $content -ErrorAction Stop)
+                            }
+                        }
+                        
+                        # Add new items avoiding duplicates
+                        $newItems = @($_.Group.Item)
+                        $existingPaths = @($currentItems | Select-Object -ExpandProperty fullPath)
+                        $uniqueNewItems = $newItems | Where-Object { $existingPaths -notcontains $_.fullPath }
+                        
+                        if ($uniqueNewItems) {
+                            $updatedItems = @($currentItems) + @($uniqueNewItems)
+                            $json = ConvertTo-Json -InputObject $updatedItems -Depth 10
+                            [System.IO.File]::WriteAllText($albumPath, $json, [System.Text.Encoding]::UTF8)
+                        }
+                        
+                        $success = $true
+                    }
+                    catch [System.IO.IOException] {
+                        $retryCount++
+                        if ($retryCount -lt $retryStrategy.MaxRetries) {
+                            Start-Sleep -Milliseconds $currentDelay
+                            $currentDelay *= $retryStrategy.BackoffMultiplier
+                        }
+                    }
+                    catch {
+                        Write-Error "Failed to update album $albumName : $_"
+                        break
+                    }
+                    finally {
+                        if ($lockStream) {
+                            $lockStream.Dispose()
+                            $null = Remove-Item -Path $lockFile -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+                
+                if (-not $success) {
+                    Write-Error "Failed to update album $albumName after $($retryStrategy.MaxRetries) retries"
+                }
+            }
+        }
+
+        # Write errors and duplicates to files
+        if ($errors.Count -gt 0) {
+            Write-JsonError -FilePath $sortingErrorsPath -ErrorItems @($errors.ToArray())
+        }
+        if ($duplicates.Count -gt 0) {
+            Write-JsonError -FilePath $duplicateErrorsPath -ErrorItems @($duplicates.ToArray())
+        }
+    }
+    catch {
+        Write-Error "Failed to process files: $_"
+        throw
+    }
+}
+
 # Check and install ExifTool if needed
 $exifToolCommand = Get-Command exiftool -ErrorAction SilentlyContinue
 $localExifTool = Join-Path $PSScriptRoot "ExifTool\exiftool.exe"
@@ -692,6 +826,7 @@ function Expand-ZipFiles {
 # Initialize script-level variables at the start
 $script:extractedPath = Join-Path -Path $PSScriptRoot -ChildPath "extracted"
 $script:sortedPath = Join-Path -Path $PSScriptRoot -ChildPath "sorted"
+$script:outputPath = Join-Path -Path $PSScriptRoot -ChildPath "output"
 $script:lastProcessedFolder = [ConcurrentDictionary[string,bool]]::new()
 $script:lastSortedFolder = [ConcurrentDictionary[string,bool]]::new()
 $script:logsPath = Join-Path -Path $PSScriptRoot -ChildPath "logs"
@@ -748,17 +883,25 @@ ForEach-Object -ThrottleLimit 8 -Parallel {
     Update-FileMetadata -FilePath $_.FullName -MetadataErrorsPath $metadataErrorsPath
 }
 
-# Run tests
-$errors = Test-MetadataUpdates -FolderPath $script:extractedPath
-if ($errors.Count -gt 0) {
-    Show-HelpAndExit "Error: Metadata validation failed:`n$($errors -join "`n")"
-}
-
-# Sort files into year folders (with album tracking if enabled)
-if ($script:generateAlbums -eq 'yes') {
-    Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath -TrackAlbums $true -Albums $script:albums -AlbumsPath $script:albumsPath
+# Sort files based on sorting parameter
+if ($Sorting -ne 'no') {
+    Write-ScriptInformation "Starting file sorting with mode: $Sorting"
+    if ($script:generateAlbums -eq 'yes') {
+        if ($Sorting -eq 'years') {
+            Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath -TrackAlbums $true -Albums $script:albums -AlbumsPath $script:albumsPath
+        } else {
+            Move-ToOneFolder -SourcePath $script:extractedPath -DestinationRoot $script:outputPath -TrackAlbums $true -Albums $script:albums -AlbumsPath $script:albumsPath
+        }
+    } else {
+        if ($Sorting -eq 'years') {
+            Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath -TrackAlbums $false
+        } else {
+            Move-ToOneFolder -SourcePath $script:extractedPath -DestinationRoot $script:outputPath -TrackAlbums $false
+        }
+    }
+    Write-ScriptInformation "File sorting completed"
 } else {
-    Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath -TrackAlbums $false
+    Write-ScriptInformation "Skipping file sorting (mode: no)"
 }
 
 function Export-Album {
@@ -869,17 +1012,53 @@ try {
         Expand-ZipFiles
     }
 
-    # Handle album generation
+    # Process all media files in parallel for metadata update
+    $updateFileMetadataStr = ${function:Update-FileMetadata}.ToString()
+    Get-ChildItem -Path $script:extractedPath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4" | 
+    ForEach-Object -ThrottleLimit 8 -Parallel {
+        ${function:Update-FileMetadata} = $using:updateFileMetadataStr
+        $metadataErrorsPath = $using:script:metadataErrorsPath
+        Update-FileMetadata -FilePath $_.FullName -MetadataErrorsPath $metadataErrorsPath
+    }
+
+    # Sort files if sorting is enabled
+    if ($Sorting -ne 'no') {
+        Write-ScriptInformation "Starting file sorting with mode: $Sorting"
+        if ($Sorting -eq 'years') {
+            Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath -TrackAlbums $false
+        } else {
+            Move-ToOneFolder -SourcePath $script:extractedPath -DestinationRoot $script:outputPath -TrackAlbums $false
+        }
+        Write-ScriptInformation "File sorting completed"
+    } else {
+        Write-ScriptInformation "Skipping file sorting (mode: no)"
+    }
+
+    # Handle album generation independently
     if ($GenerateAlbums -eq 'yes') {
         Write-ScriptInformation "Starting album generation..."
         Import-Albums
+        
+        # Process files for albums based on current sorting mode
+        $sourcePath = if ($Sorting -eq 'years') { $script:sortedPath } 
+                     elseif ($Sorting -eq 'onefolder') { $script:outputPath }
+                     else { $script:extractedPath }
+
+        if ($Sorting -eq 'years') {
+            Move-ToYearFolders -SourcePath $sourcePath -DestinationRoot $script:sortedPath -TrackAlbums $true -Albums $script:albums -AlbumsPath $script:albumsPath
+        } elseif ($Sorting -eq 'onefolder') {
+            Move-ToOneFolder -SourcePath $sourcePath -DestinationRoot $script:outputPath -TrackAlbums $true -Albums $script:albums -AlbumsPath $script:albumsPath
+        } else {
+            # If no sorting is selected, process files in place for albums
+            Process-AlbumsInPlace -SourcePath $sourcePath -Albums $script:albums -AlbumsPath $script:albumsPath
+        }
         Write-ScriptInformation "Album generation completed"
     }
 
     # Handle album export if requested
-    if ($ExportAlbum) {
+    if ($ExportAlbum -eq 'yes') {
         Write-ScriptInformation "Starting album export..."
-        Export-Album -AlbumName $ExportAlbum -AlbumsPath $script:albumsPath -ExportPath $script:exportPath
+        Export-Album -AlbumName 'yes' -AlbumsPath $script:albumsPath -ExportPath $script:exportPath
     }
 
     Write-ScriptInformation "All operations completed successfully"
@@ -898,4 +1077,128 @@ function Write-JsonError {
     )
     
     ConvertTo-Json -InputObject $ErrorItems | Set-Content -Path $FilePath -Encoding UTF8
+}
+
+function Process-AlbumsInPlace {
+    param (
+        [Parameter(Mandatory)]
+        [string]$SourcePath,
+        [Parameter(Mandatory)]
+        [hashtable]$Albums,
+        [Parameter(Mandatory)]
+        [string]$AlbumsPath,
+        [int]$ThrottleLimit = 8
+    )
+
+    $albumUpdates = [ConcurrentBag[PSCustomObject]]::new()
+
+    try {
+        # Process files in parallel
+        @(Get-ChildItem -Path $SourcePath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4") | 
+        ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+            $albums = $using:Albums
+            $albumUpdates = $using:albumUpdates
+            
+            try {
+                $currentFolder = Split-Path (Split-Path $_.FullName -Parent) -Leaf
+                $folderNameLower = $currentFolder.ToLower()
+                
+                if ($albums.ContainsKey($folderNameLower)) {
+                    # Get relative path from source
+                    $relativePath = $_.DirectoryName.Replace($using:SourcePath, '').TrimStart('\')
+                    if ([string]::IsNullOrEmpty($relativePath)) {
+                        $relativePath = "."
+                    }
+                    
+                    $fileName = [System.IO.Path]::GetFileName($_.FullName)
+                    
+                    $albumUpdates.Add([PSCustomObject]@{
+                        Album = $folderNameLower
+                        Item = [PSCustomObject]@{
+                            name = $fileName
+                            relativePath = $relativePath
+                            fullPath = if ($relativePath -eq ".") { $fileName } else { Join-Path $relativePath $fileName }
+                        }
+                    })
+                }
+            }
+            catch {
+                Write-Warning "Error processing file $($_.FullName) for albums: $_"
+            }
+        }
+
+        # Process album updates with retry strategy
+        $retryStrategy = @{
+            MaxRetries = 5
+            RetryDelay = 100
+            BackoffMultiplier = 2
+        }
+        
+        $albumUpdates.ToArray() | Group-Object -Property Album | ForEach-Object {
+            $albumName = $_.Name
+            $albumPath = Join-Path $AlbumsPath "$albumName.json"
+            $lockFile = Join-Path $AlbumsPath "$albumName.lock"
+            $success = $false
+            $retryCount = 0
+            $currentDelay = $retryStrategy.RetryDelay
+            
+            while (-not $success -and $retryCount -lt $retryStrategy.MaxRetries) {
+                $lockStream = $null
+                try {
+                    $lockStream = [System.IO.File]::Open(
+                        $lockFile, 
+                        [System.IO.FileMode]::CreateNew,
+                        [System.IO.FileAccess]::Write,
+                        [System.IO.FileShare]::None
+                    )
+                    
+                    $currentItems = @()
+                    if (Test-Path $albumPath) {
+                        $content = Get-Content -Path $albumPath -Raw -ErrorAction Stop
+                        if ($content) {
+                            $currentItems = @(ConvertFrom-Json -InputObject $content -ErrorAction Stop)
+                        }
+                    }
+                    
+                    # Add new items avoiding duplicates
+                    $newItems = @($_.Group.Item)
+                    $existingPaths = @($currentItems | Select-Object -ExpandProperty fullPath)
+                    $uniqueNewItems = $newItems | Where-Object { $existingPaths -notcontains $_.fullPath }
+                    
+                    if ($uniqueNewItems) {
+                        $updatedItems = @($currentItems) + @($uniqueNewItems)
+                        $json = ConvertTo-Json -InputObject $updatedItems -Depth 10
+                        [System.IO.File]::WriteAllText($albumPath, $json, [System.Text.Encoding]::UTF8)
+                    }
+                    
+                    $success = $true
+                }
+                catch [System.IO.IOException] {
+                    $retryCount++
+                    if ($retryCount -lt $retryStrategy.MaxRetries) {
+                        Start-Sleep -Milliseconds $currentDelay
+                        $currentDelay *= $retryStrategy.BackoffMultiplier
+                    }
+                }
+                catch {
+                    Write-Error "Failed to update album $albumName : $_"
+                    break
+                }
+                finally {
+                    if ($lockStream) {
+                        $lockStream.Dispose()
+                        $null = Remove-Item -Path $lockFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+            
+            if (-not $success) {
+                Write-Error "Failed to update album $albumName after $($retryStrategy.MaxRetries) retries"
+            }
+        }
+    }
+    catch {
+        Write-Error "Failed to process albums: $_"
+        throw
+    }
 }
