@@ -59,19 +59,23 @@ function Move-ToYearFolders {
     $errors = [ConcurrentBag[PSCustomObject]]::new()
     $albumUpdates = [ConcurrentBag[PSCustomObject]]::new()
     
-    # Create references that can be used with $using:
-    $dupBag = $duplicates
-    $errorBag = $errors
-    $albumBag = $albumUpdates
+    # Create thread-safe counter
+    $processedFiles = [ref]0
 
     try {
         Write-Host "Organizing files into year-based folders..." -ForegroundColor Cyan
         $files = @(Get-ChildItem -Path $SourcePath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
         $totalFiles = $files.Count
-        $processedFiles = 0
         
+        # Create references for parallel scope
+        $dupBag = $duplicates
+        $errorBag = $errors
+        $albumBag = $albumUpdates
+        $counter = $processedFiles
+        $scriptRoot = $PSScriptRoot
+
         $files | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
-            $current = [System.Threading.Interlocked]::Increment([ref]$using:processedFiles)
+            $current = [System.Threading.Interlocked]::Increment($using:counter)
             $fileName = [System.IO.Path]::GetFileName($_.FullName)
             Write-ProgressStatus -Current $current -Total $using:totalFiles -Operation "Sorting" -ItemName $fileName
 
@@ -174,10 +178,8 @@ function Move-ToOneFolder {
     $errors = [ConcurrentBag[PSCustomObject]]::new()
     $albumUpdates = [ConcurrentBag[PSCustomObject]]::new()
     
-    # Create references that can be used with $using:
-    $dupBag = $duplicates
-    $errorBag = $errors
-    $albumBag = $albumUpdates
+    # Create thread-safe counter
+    $processedFiles = [ref]0
 
     try {
         Write-Host "Organizing files into pictures and movies folders..." -ForegroundColor Cyan
@@ -188,14 +190,20 @@ function Move-ToOneFolder {
         # Process files
         $files = @(Get-ChildItem -Path $SourcePath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
         $totalFiles = $files.Count
-        $processedFiles = 0
         
+        # Create references for parallel scope
+        $dupBag = $duplicates
+        $errorBag = $errors
+        $albumBag = $albumUpdates
+        $counter = $processedFiles
+        $scriptRoot = $PSScriptRoot
+
         $files | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
             try {
                 # Import required module in the parallel scope
-                Import-Module $using:PSScriptRoot\SharedOperations.psm1
+                Import-Module "$using:scriptRoot\SharedOperations.psm1"
                 
-                $current = [System.Threading.Interlocked]::Increment([ref]$using:processedFiles)
+                $current = [System.Threading.Interlocked]::Increment($using:counter)
                 $fileName = [System.IO.Path]::GetFileName($_.FullName)
                 Write-ProgressStatus -Current $current -Total $using:totalFiles -Operation "Moving" -ItemName $fileName
 

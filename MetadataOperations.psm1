@@ -48,17 +48,6 @@ function Update-FileMetadata {
         [string]$FilePath
     )
 
-    # Initialize thread-safe counter using script-scoped variables
-    if (-not $script:processedFiles) {
-        $script:processedFiles = [ref]0
-        $script:totalFiles = [ref](Get-ChildItem -Path (Split-Path $FilePath -Parent) -Recurse -Include "*.jpg","*.heic","*.png","*.mp4").Count
-    }
-
-    # Show current folder being processed
-    $currentFolder = Split-Path (Split-Path $FilePath -Parent) -Leaf
-    $current = [System.Threading.Interlocked]::Increment($script:processedFiles)
-    Write-ProgressStatus -Current $current -Total $script:totalFiles.Value -Operation "Processing" -ItemName ([System.IO.Path]::GetFileName($FilePath))
-
     $ErrorActionPreference = 'Stop'
     $fileTypeTask = $null
     $exifDataTask = $null

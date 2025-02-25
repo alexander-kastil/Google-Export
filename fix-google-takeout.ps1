@@ -77,55 +77,79 @@ function Show-HelpAndExit {
     $helpText = @"
 Google Photos Takeout Fixer
 --------------------------
-This tool processes Google Photos Takeout archives by fixing metadata timestamps and organizing photos into folders.
+This tool processes Google Photos Takeout archives by fixing metadata timestamps, organizing photos, and managing albums.
 
 Parameter Rules:
 --------------
 1. The -ExportAlbum parameter MUST be used alone without any other parameters
 2. The -Clean parameter MUST be used alone and ONLY with value 'yes'
 3. Other parameters (-Extract, -InstallExif, -FixMetadata, -GenerateAlbums, -Sort) can be combined
-4. ExifTool is NOT installed by default, use -InstallExif yes to install it
+4. ExifTool is required for metadata operations. Use -InstallExif yes to install it automatically
 
 Parameters:
 ----------
 -Extract yes|no        : Extract ZIP files from Google Takeout (default: yes)
+                        Extracts all .zip files found in the script directory
+
 -InstallExif yes|no   : Download and install ExifTool if not found (default: no)
+                        Required for metadata operations
+                        Installs to ./ExifTool folder
+
 -FixMetadata yes|no   : Fix metadata timestamps in media files (default: yes)
+                        Corrects file extensions and timestamps
+                        Processes EXIF data and Google's metadata JSON
+
 -GenerateAlbums yes|no : Generate album JSON files (default: no)
                         Requires albums.txt file with one album name per line
+                        Creates album structure in ./albums folder
+
 -Sort no|years|onefolder : Control how files are organized (default: onefolder)
                         'no': Leave files in place after metadata fix
-                        'years': Sort into year-based folders (2023, 2022, etc.)
-                        'onefolder': Sort into pictures/ and movies/ folders
--ExportAlbum yes      : Export photos from albums
-                        When used with yes, exports all albums 
-                        Must be used alone without other parameters
--Clean yes            : Clean up ALL processing folders and files
-                        Must be used alone without other parameters
-                        Removes: extracted files, sorted files, output files,
-                                logs, albums, exported albums, and ExifTool
+                        'years': Sort into year folders (2023/, 2022/, etc.)
+                                Each year folder has pictures/ and movies/
+                        'onefolder': Sort all files into pictures/ and movies/
+
+-ExportAlbum yes|no   : Export photos from albums (must be used alone)
+                        Exports all albums to ./exported-albums
+                        Each album gets its own pictures/ and movies/ folders
+
+-Clean yes            : Clean up ALL processing folders (must be used alone)
+                        Removes: extracted/, output/, logs/, albums/,
+                                exported-albums/, ExifTool/
+
+Output Folders:
+-------------
+./extracted          : Contains extracted Google Takeout files
+./output            : Contains organized photos and videos
+./logs              : Contains error logs and processing reports
+./albums            : Contains generated album metadata
+./exported-albums   : Contains exported album photos
+./ExifTool          : Contains ExifTool installation (if installed)
+
+Error Logs:
+----------
+./logs/metadata.errors.json : Files with metadata processing issues
+./logs/sorting.errors.json  : Files that failed during sorting
+./logs/duplicate.errors.json: Files renamed due to duplicates
 
 Examples:
 --------
-Basic usage - extract and organize into pictures/movies folders:
-  .\fix-google-takeout.ps1 -Extract yes -Sort onefolder
-
-Extract files without fixing metadata:
-  .\fix-google-takeout.ps1 -Extract yes -FixMetadata no -Sort onefolder
-
-Extract files and sort by year:
-  .\fix-google-takeout.ps1 -Extract yes -Sort years
-
-Generate albums during sorting:
-  .\fix-google-takeout.ps1 -Extract yes -GenerateAlbums yes -Sort years
-
-First time setup with ExifTool installation:
+Basic usage (recommended for most users):
   .\fix-google-takeout.ps1 -Extract yes -InstallExif yes -Sort onefolder
 
-Export all albums (must be used alone):
+Process existing extracted files:
+  .\fix-google-takeout.ps1 -Extract no -Sort onefolder
+
+Extract and sort by year with album tracking:
+  .\fix-google-takeout.ps1 -Extract yes -GenerateAlbums yes -Sort years
+
+Fix metadata only (no sorting):
+  .\fix-google-takeout.ps1 -Extract yes -Sort no
+
+Export generated albums:
   .\fix-google-takeout.ps1 -ExportAlbum yes
 
-Clean up ALL processing folders (must be used alone):
+Clean up all processing files:
   .\fix-google-takeout.ps1 -Clean yes
 "@
     Write-Host $helpText
@@ -265,13 +289,13 @@ try {
         Write-Host "`nProcessing metadata for files..." -ForegroundColor Cyan
         
         # Create and initialize the synchronized hashtable with thread-safe collections
-        $script:syncHash = [hashtable]::Synchronized(@{})
-        $script:syncHash.MetadataErrors = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-        $script:syncHash.ProcessedFiles = 0
-        $script:syncHash.TotalFiles = 0
+        $script:syncHash = [hashtable]::Synchronized(@{
+            MetadataErrors = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
+            ProcessedFiles = [ref]0
+        })
         
         $files = @(Get-ChildItem -Path $script:extractedPath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
-        $script:syncHash.TotalFiles = $files.Count
+        $totalFiles = $files.Count
         
         # Create runspace pool for parallel processing
         $InitialSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
@@ -288,17 +312,17 @@ try {
         
         foreach ($file in $files) {
             $PowerShell = [powershell]::Create().AddScript({
-                param($FilePath, $ScriptRoot)
+                param($FilePath, $ScriptRoot, $Total)
                 
                 try {
-                    # Import required module
+                    # Import required modules
                     Import-Module (Join-Path $ScriptRoot "MetadataOperations.psm1")
+                    Import-Module (Join-Path $ScriptRoot "SharedOperations.psm1")
                     
-                    $current = [System.Threading.Interlocked]::Increment([ref]$syncHash.ProcessedFiles)
+                    # Update counter and show progress
+                    $current = [System.Threading.Interlocked]::Increment($syncHash.ProcessedFiles)
                     $fileName = [System.IO.Path]::GetFileName($FilePath)
-                    $status = "[$current/$($syncHash.TotalFiles)] Processing: $fileName"
-                    $spaces = " " * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1)
-                    Write-Host "`r$status$spaces" -NoNewline
+                    Write-ProgressStatus -Current $current -Total $Total -Operation "Processing" -ItemName $fileName
                     
                     if (-not (Update-FileMetadata -FilePath $FilePath)) {
                         $errorInfo = [PSCustomObject]@{
@@ -316,7 +340,7 @@ try {
                     $syncHash.MetadataErrors.Add($errorInfo)
                     Write-Host ""  # New line after error
                 }
-            }).AddArgument($file.FullName).AddArgument($PSScriptRoot)
+            }).AddArgument($file.FullName).AddArgument($PSScriptRoot).AddArgument($totalFiles)
             
             $PowerShell.RunspacePool = $RunspacePool
             
