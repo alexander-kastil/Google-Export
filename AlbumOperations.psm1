@@ -1,4 +1,5 @@
 using namespace System.Collections.Concurrent
+Import-Module $PSScriptRoot\SharedOperations.psm1
 
 function Import-Albums {
     param (
@@ -19,11 +20,6 @@ function Import-Albums {
         return $null
     }
 
-    # Create albums directory if it doesn't exist
-    if (-not (Test-Path $AlbumsPath)) {
-        $null = New-Item -ItemType Directory -Path $AlbumsPath -Force
-    }
-
     # Read and process album names
     Get-Content $albumsFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
         $albumName = $_.Trim().ToLower()
@@ -32,9 +28,11 @@ function Import-Albums {
             items = [ConcurrentBag[PSCustomObject]]::new()
         }
         
-        # Initialize album JSON file
-        $albumPath = Join-Path $AlbumsPath "$albumName.json"
-        "[]" | Set-Content -Path $albumPath -Encoding UTF8
+        # Create album folder and initialize metadata file
+        $albumFolderPath = Join-Path $AlbumsPath $albumName
+        $albumMetadataPath = Join-Path $albumFolderPath "album.json"
+        $null = New-Item -ItemType Directory -Path $albumFolderPath -Force
+        "[]" | Set-Content -Path $albumMetadataPath -Encoding UTF8
         Write-Information "Initialized album: $albumName"
     }
 
@@ -57,8 +55,9 @@ function Update-AlbumFiles {
 
     $AlbumUpdates | Group-Object -Property Album | ForEach-Object {
         $albumName = $_.Name
-        $albumPath = Join-Path $AlbumsPath "$albumName.json"
-        $lockFile = Join-Path $AlbumsPath "$albumName.lock"
+        $albumFolderPath = Join-Path $AlbumsPath $albumName
+        $albumMetadataPath = Join-Path $albumFolderPath "album.json"
+        $lockFile = Join-Path $albumFolderPath "album.lock"
         $success = $false
         $retryCount = 0
         $currentDelay = $retryStrategy.RetryDelay
@@ -74,8 +73,8 @@ function Update-AlbumFiles {
                 )
                 
                 $currentItems = @()
-                if (Test-Path $albumPath) {
-                    $content = Get-Content -Path $albumPath -Raw -ErrorAction Stop
+                if (Test-Path $albumMetadataPath) {
+                    $content = Get-Content -Path $albumMetadataPath -Raw -ErrorAction Stop
                     if ($content) {
                         $currentItems = @(ConvertFrom-Json -InputObject $content -ErrorAction Stop)
                     }
@@ -89,7 +88,7 @@ function Update-AlbumFiles {
                 if ($uniqueNewItems) {
                     $updatedItems = @($currentItems) + @($uniqueNewItems)
                     $json = ConvertTo-Json -InputObject $updatedItems -Depth 10
-                    [System.IO.File]::WriteAllText($albumPath, $json, [System.Text.Encoding]::UTF8)
+                    [System.IO.File]::WriteAllText($albumMetadataPath, $json, [System.Text.Encoding]::UTF8)
                 }
                 
                 $success = $true
@@ -131,8 +130,8 @@ function Export-Album {
     $null = New-Item -ItemType Directory -Path $ExportPath -Force
 
     # Get list of all albums to process
-    $albumsToProcess = Get-ChildItem -Path $AlbumsPath -Filter "*.json" | ForEach-Object { 
-        [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+    $albumsToProcess = Get-ChildItem -Path $AlbumsPath -Directory | ForEach-Object { 
+        $_.Name 
     }
     
     if ($albumsToProcess.Count -eq 0) {
@@ -144,8 +143,9 @@ function Export-Album {
     foreach ($album in $albumsToProcess) {
         Write-Information "Processing album: $album"
         
-        $albumFile = Join-Path $AlbumsPath "$album.json"
-        $albumContent = Get-Content -Path $albumFile -Raw | ConvertFrom-Json
+        $albumFolderPath = Join-Path $AlbumsPath $album
+        $albumMetadataPath = Join-Path $albumFolderPath "album.json"
+        $albumContent = Get-Content -Path $albumMetadataPath -Raw | ConvertFrom-Json
         
         if ($albumContent.Count -eq 0) {
             Write-Warning "Album '$album' is empty, skipping..."
@@ -154,11 +154,16 @@ function Export-Album {
 
         $albumExportPath = Join-Path $ExportPath $album
         $null = New-Item -ItemType Directory -Path $albumExportPath -Force
+        
+        # Create media folders
+        $mediaFolders = New-MediaFolders -BasePath $albumExportPath
 
         $albumContent | ForEach-Object {
             $sourcePath = Join-Path $PSScriptRoot $_.fullPath
             if (Test-Path $sourcePath) {
-                $destPath = Join-Path $albumExportPath $_.name
+                $subFolder = Get-MediaType -Extension ([System.IO.Path]::GetExtension($_.name))
+                $destFolder = if ($subFolder -eq "movies") { $mediaFolders.MoviesPath } else { $mediaFolders.PicturesPath }
+                $destPath = Join-Path $destFolder $_.name
                 Copy-Item -Path $sourcePath -Destination $destPath -Force
                 Write-Information "Exported: $($_.name)"
             } else {

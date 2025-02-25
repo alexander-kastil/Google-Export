@@ -8,6 +8,9 @@ param (
     
     [ValidateSet('yes', 'no')]
     [string]$InstallExif = 'no',
+
+    [ValidateSet('yes', 'no')]
+    [string]$FixMetadata = 'yes',
     
     [ValidateSet('yes', 'no')]
     [string]$GenerateAlbums = 'no',
@@ -33,6 +36,7 @@ $ProgressPreference = 'Continue'
 Import-Module $PSScriptRoot\FileOperations.psm1
 Import-Module $PSScriptRoot\MetadataOperations.psm1
 Import-Module $PSScriptRoot\AlbumOperations.psm1
+Import-Module $PSScriptRoot\SharedOperations.psm1
 
 # Version check
 if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -55,10 +59,9 @@ function Write-JsonError {
 
 # Initialize script-level variables
 $script:extractedPath = Join-Path -Path $PSScriptRoot -ChildPath "extracted"
-$script:sortedPath = Join-Path -Path $PSScriptRoot -ChildPath "sorted"
 $script:outputPath = Join-Path -Path $PSScriptRoot -ChildPath "output"
 $script:logsPath = Join-Path -Path $PSScriptRoot -ChildPath "logs"
-$script:albumsPath = Join-Path -Path $PSScriptRoot -ChildPath "photo-albums"
+$script:albumsPath = Join-Path -Path $PSScriptRoot -ChildPath "albums"
 $script:exportPath = Join-Path -Path $PSScriptRoot -ChildPath "exported-albums"
 $script:metadataErrorsPath = Join-Path -Path $script:logsPath -ChildPath "metadata.errors.json"
 $script:sortingErrorsPath = Join-Path -Path $script:logsPath -ChildPath "sorting.errors.json"
@@ -80,20 +83,21 @@ Parameter Rules:
 --------------
 1. The -ExportAlbum parameter MUST be used alone without any other parameters
 2. The -Clean parameter MUST be used alone and ONLY with value 'yes'
-3. Other parameters (-Extract, -InstallExif, -GenerateAlbums, -Sort) can be combined
+3. Other parameters (-Extract, -InstallExif, -FixMetadata, -GenerateAlbums, -Sort) can be combined
 4. ExifTool is NOT installed by default, use -InstallExif yes to install it
 
 Parameters:
 ----------
 -Extract yes|no        : Extract ZIP files from Google Takeout (default: yes)
--InstallExif yes|no    : Download and install ExifTool if not found (default: no)
+-InstallExif yes|no   : Download and install ExifTool if not found (default: no)
+-FixMetadata yes|no   : Fix metadata timestamps in media files (default: yes)
 -GenerateAlbums yes|no : Generate album JSON files (default: no)
                         Requires albums.txt file with one album name per line
 -Sort no|years|onefolder : Control how files are organized (default: onefolder)
                         'no': Leave files in place after metadata fix
                         'years': Sort into year-based folders (2023, 2022, etc.)
                         'onefolder': Sort into pictures/ and movies/ folders
--ExportAlbum yes       : Export photos from albums
+-ExportAlbum yes      : Export photos from albums
                         When used with yes, exports all albums 
                         Must be used alone without other parameters
 -Clean yes            : Clean up ALL processing folders and files
@@ -105,6 +109,9 @@ Examples:
 --------
 Basic usage - extract and organize into pictures/movies folders:
   .\fix-google-takeout.ps1 -Extract yes -Sort onefolder
+
+Extract files without fixing metadata:
+  .\fix-google-takeout.ps1 -Extract yes -FixMetadata no -Sort onefolder
 
 Extract files and sort by year:
   .\fix-google-takeout.ps1 -Extract yes -Sort years
@@ -129,9 +136,7 @@ function Initialize-Folders {
     # Create required folders
     $foldersToCreate = @(
         $script:extractedPath,
-        $script:sortedPath,
         $script:logsPath,
-        $script:albumsPath,
         (Join-Path $script:outputPath "pictures"),
         (Join-Path $script:outputPath "movies")
     )
@@ -165,7 +170,6 @@ function Remove-TempFiles {
     
     $foldersToClean = @(
         $script:extractedPath,
-        $script:sortedPath,
         $script:outputPath,
         $script:logsPath,
         $script:albumsPath,
@@ -257,105 +261,107 @@ try {
     }
 
     # Process files for metadata
-    Write-Host "`nProcessing metadata for files..." -ForegroundColor Cyan
-    
-    # Create and initialize the synchronized hashtable with thread-safe collections
-    $script:syncHash = [hashtable]::Synchronized(@{})
-    $script:syncHash.MetadataErrors = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-    $script:syncHash.ProcessedFiles = 0
-    $script:syncHash.TotalFiles = 0
-    
-    $files = @(Get-ChildItem -Path $script:extractedPath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
-    $script:syncHash.TotalFiles = $files.Count
-    
-    # Create runspace pool for parallel processing
-    $InitialSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $InitialSessionState.Variables.Add(
-        [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
-            'syncHash', $script:syncHash, 'Synchronized hashtable for cross-thread communication'
+    if ($FixMetadata -eq 'yes') {
+        Write-Host "`nProcessing metadata for files..." -ForegroundColor Cyan
+        
+        # Create and initialize the synchronized hashtable with thread-safe collections
+        $script:syncHash = [hashtable]::Synchronized(@{})
+        $script:syncHash.MetadataErrors = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
+        $script:syncHash.ProcessedFiles = 0
+        $script:syncHash.TotalFiles = 0
+        
+        $files = @(Get-ChildItem -Path $script:extractedPath -Recurse -Include "*.jpg","*.heic","*.png","*.mp4")
+        $script:syncHash.TotalFiles = $files.Count
+        
+        # Create runspace pool for parallel processing
+        $InitialSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+        $InitialSessionState.Variables.Add(
+            [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new(
+                'syncHash', $script:syncHash, 'Synchronized hashtable for cross-thread communication'
+            )
         )
-    )
-    
-    $RunspacePool = [runspacefactory]::CreateRunspacePool(1, 8, $InitialSessionState, $Host)
-    $RunspacePool.Open()
-    
-    $Jobs = @()
-    
-    foreach ($file in $files) {
-        $PowerShell = [powershell]::Create().AddScript({
-            param($FilePath, $ScriptRoot)
-            
-            try {
-                # Import required module
-                Import-Module (Join-Path $ScriptRoot "MetadataOperations.psm1")
+        
+        $RunspacePool = [runspacefactory]::CreateRunspacePool(1, 8, $InitialSessionState, $Host)
+        $RunspacePool.Open()
+        
+        $Jobs = @()
+        
+        foreach ($file in $files) {
+            $PowerShell = [powershell]::Create().AddScript({
+                param($FilePath, $ScriptRoot)
                 
-                $current = [System.Threading.Interlocked]::Increment([ref]$syncHash.ProcessedFiles)
-                $fileName = [System.IO.Path]::GetFileName($FilePath)
-                $status = "[$current/$($syncHash.TotalFiles)] Processing: $fileName"
-                $spaces = " " * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1)
-                Write-Host "`r$status$spaces" -NoNewline
-                
-                if (-not (Update-FileMetadata -FilePath $FilePath)) {
+                try {
+                    # Import required module
+                    Import-Module (Join-Path $ScriptRoot "MetadataOperations.psm1")
+                    
+                    $current = [System.Threading.Interlocked]::Increment([ref]$syncHash.ProcessedFiles)
+                    $fileName = [System.IO.Path]::GetFileName($FilePath)
+                    $status = "[$current/$($syncHash.TotalFiles)] Processing: $fileName"
+                    $spaces = " " * [Math]::Max(0, [Console]::WindowWidth - $status.Length - 1)
+                    Write-Host "`r$status$spaces" -NoNewline
+                    
+                    if (-not (Update-FileMetadata -FilePath $FilePath)) {
+                        $errorInfo = [PSCustomObject]@{
+                            Path = $FilePath
+                            Message = "Failed to update metadata"
+                        }
+                        $syncHash.MetadataErrors.Add($errorInfo)
+                    }
+                }
+                catch {
                     $errorInfo = [PSCustomObject]@{
                         Path = $FilePath
-                        Message = "Failed to update metadata"
+                        Message = "Error: $_"
                     }
                     $syncHash.MetadataErrors.Add($errorInfo)
+                    Write-Host ""  # New line after error
                 }
+            }).AddArgument($file.FullName).AddArgument($PSScriptRoot)
+            
+            $PowerShell.RunspacePool = $RunspacePool
+            
+            $Jobs += @{
+                PowerShell = $PowerShell
+                Handle = $PowerShell.BeginInvoke()
             }
-            catch {
-                $errorInfo = [PSCustomObject]@{
-                    Path = $FilePath
-                    Message = "Error: $_"
-                }
-                $syncHash.MetadataErrors.Add($errorInfo)
-                Write-Host ""  # New line after error
+        }
+        
+        # Wait for all jobs to complete
+        Write-Host "`nWaiting for all files to be processed..." -ForegroundColor DarkGray
+        do {
+            $JobsRemaining = $Jobs.Handle | Where-Object { $_.IsCompleted -eq $false }
+            
+            if ($JobsRemaining) {
+                Start-Sleep -Milliseconds 100
             }
-        }).AddArgument($file.FullName).AddArgument($PSScriptRoot)
+        } while ($JobsRemaining)
         
-        $PowerShell.RunspacePool = $RunspacePool
-        
-        $Jobs += @{
-            PowerShell = $PowerShell
-            Handle = $PowerShell.BeginInvoke()
+        # Clean up
+        foreach ($job in $Jobs) {
+            $job.PowerShell.EndInvoke($job.Handle)
+            $job.PowerShell.Dispose()
         }
-    }
-    
-    # Wait for all jobs to complete
-    Write-Host "`nWaiting for all files to be processed..." -ForegroundColor DarkGray
-    do {
-        $JobsRemaining = $Jobs.Handle | Where-Object { $_.IsCompleted -eq $false }
+        $RunspacePool.Close()
+        $RunspacePool.Dispose()
         
-        if ($JobsRemaining) {
-            Start-Sleep -Milliseconds 100
-        }
-    } while ($JobsRemaining)
-    
-    # Clean up
-    foreach ($job in $Jobs) {
-        $job.PowerShell.EndInvoke($job.Handle)
-        $job.PowerShell.Dispose()
-    }
-    $RunspacePool.Close()
-    $RunspacePool.Dispose()
-    
-    Write-Host "`nFile processing completed" -ForegroundColor Green
+        Write-Host "`nFile processing completed" -ForegroundColor Green
 
-    # Write metadata errors
-    if ($syncHash.MetadataErrors.Count -gt 0) {
-        Write-Host "`nFound $($syncHash.MetadataErrors.Count) metadata errors" -ForegroundColor Yellow
-        Write-JsonError -FilePath $script:metadataErrorsPath -ErrorItems @($syncHash.MetadataErrors.ToArray())
+        # Write metadata errors
+        if ($syncHash.MetadataErrors.Count -gt 0) {
+            Write-Host "`nFound $($syncHash.MetadataErrors.Count) metadata errors" -ForegroundColor Yellow
+            Write-JsonError -FilePath $script:metadataErrorsPath -ErrorItems @($syncHash.MetadataErrors.ToArray())
+        }
     }
 
     # Sort files if enabled
     if ($Sort -ne 'no') {
         Write-Host "`nSorting files (mode: $Sort)..." -ForegroundColor Cyan
         $sortingResult = if ($Sort -eq 'years') {
-            Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:sortedPath `
-                             -TrackAlbums ($GenerateAlbums -eq 'yes') -Albums $albums -AlbumsPath $script:albumsPath
+            Move-ToYearFolders -SourcePath $script:extractedPath -DestinationRoot $script:outputPath `
+                             -TrackAlbums ($GenerateAlbums -eq 'yes') -Albums $albums -AlbumsPath $script:outputPath
         } else {
             Move-ToOneFolder -SourcePath $script:extractedPath -DestinationRoot $script:outputPath `
-                           -TrackAlbums ($GenerateAlbums -eq 'yes') -Albums $albums -AlbumsPath $script:albumsPath
+                           -TrackAlbums ($GenerateAlbums -eq 'yes') -Albums $albums -AlbumsPath $script:outputPath
         }
 
         # Write sorting errors and duplicates

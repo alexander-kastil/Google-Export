@@ -1,6 +1,8 @@
 # Google Photos Takeout Matadata Fixer
 
-> This project was prompted by [Alexander Kastil](https://www.linkedin.com/in/alexander-kastil-3bb26511a/) and implemented using the Agentic Preview of GitHub Copilot Edits with Claude 3.5 Sonnet as the underlying AI model.
+![giro](/sample_export/giro.jpg)
+
+> This project was prompted by [Alexander Kastil](https://www.linkedin.com/in/alexander-kastil-3bb26511a/) and implemented using the Agentic Preview of GitHub Copilot Edits with Claude 3.5 Sonnet as the underlying AI model. It is dedicated to my beloved dog Giro, a Galgo Espanol rescue, which left this world on 2024-08-05 at age of approx 14 years.
 
 This PowerShell script helps fix common issues with Google Photos exports using Google Takeout. It addresses problems such as:
 
@@ -104,7 +106,7 @@ The project includes a test file `fix-google-takeout-v2.tests.ps1` that verifies
 Run the tests using Pester:
 
 ```powershell
-Invoke-Pester .\fix-google-takeout-v2.tests.ps1 
+Invoke-Pester .\fix-google-takeout-v2.tests.ps1
 ```
 
 ## Example Usage
