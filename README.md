@@ -25,6 +25,8 @@ This tool addresses all these issues and provides flexible organization options.
 
 Basic usage (recommended for most users):
 
+- Copy the zip files from Google Takeout to the root of this project
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract yes -InstallExif yes -Sort onefolder
 ```
