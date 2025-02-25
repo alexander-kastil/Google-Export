@@ -24,6 +24,7 @@ This tool addresses all these issues and provides flexible organization options.
 ## Quick Start
 
 Basic usage (recommended for most users):
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract yes -InstallExif yes -Sort onefolder
 ```
@@ -33,18 +34,21 @@ Basic usage (recommended for most users):
 ### Core Parameters
 
 `-Extract yes|no` (Default: yes)
+
 - Controls whether ZIP files are extracted
 - Set to 'no' if you've already extracted files manually
 - Creates the 'extracted/' folder and preserves folder structure
 - Handles multiple Takeout ZIP files in parallel
 
 `-InstallExif yes|no` (Default: no)
+
 - Downloads and installs ExifTool if not found
 - ExifTool is required for metadata operations
 - Installs to './ExifTool' folder
 - Adds ExifTool to the current session's PATH
 
 `-FixMetadata yes|no` (Default: yes)
+
 - Processes and corrects file metadata:
   - Reads creation dates from JSON metadata files
   - Updates EXIF timestamps
@@ -53,6 +57,7 @@ Basic usage (recommended for most users):
 - Runs in parallel for better performance
 
 `-Sort no|years|onefolder` (Default: onefolder)
+
 - Controls how files are organized after processing:
   - 'no': Leaves files in place after metadata fix
   - 'years': Sorts into year-based folders (2023/, 2022/, etc.)
@@ -63,20 +68,23 @@ Basic usage (recommended for most users):
 ### Album Management
 
 `-GenerateAlbums yes|no` (Default: no)
+
 - Creates JSON files tracking photo locations
 - Requires albums.txt with one album name per line
 - Maintains album structure even after sorting
-- Creates album metadata in ./albums folder
+- Creates album metadata in output/albums folder
 
-`-ExportAlbum yes|no`
+`-ExportAlbum yes|no` (Default: no)
+
 - Must be used alone without other parameters
 - Exports photos from generated albums
-- Creates separate pictures/ and movies/ in each album folder
-- Copies files to maintain original organization
+- Creates separate pictures/ and movies/ in each album
+- Places exported albums in output/albums/NAME
 
 ### Maintenance
 
 `-Clean yes`
+
 - Must be used alone
 - Removes all processing folders:
   - extracted/
@@ -95,19 +103,16 @@ workspace/
 │       └── Google Photos/
 ├── output/                 # Organized photo collection
 │   ├── pictures/          # All image files (.jpg, .heic, .png)
-│   └── movies/            # All video files (.mp4)
-├── albums/                # Generated album metadata
-│   ├── vacation2023/
-│   │   └── album.json
-│   └── family2023/
-│       └── album.json
-├── exported-albums/       # Exported album contents
-│   ├── vacation2023/
-│   │   ├── pictures/
-│   │   └── movies/
-│   └── family2023/
-│       ├── pictures/
-│       └── movies/
+│   ├── movies/           # All video files (.mp4)
+│   └── albums/          # Generated and exported album content
+│       ├── vacation2023/
+│       │   ├── album.json
+│       │   ├── pictures/
+│       │   └── movies/
+│       └── family2023/
+│           ├── album.json
+│           ├── pictures/
+│           └── movies/
 └── logs/                  # Processing reports
     ├── metadata.errors.json   # Files with metadata issues
     ├── sorting.errors.json    # Files that failed to sort
@@ -119,11 +124,13 @@ workspace/
 The script creates detailed logs in the `logs/` folder:
 
 - `metadata.errors.json`: Lists files where metadata processing failed
+
   - Missing dates
   - Corrupt EXIF data
   - Unreadable JSON metadata
 
 - `sorting.errors.json`: Records sorting operation failures
+
   - Permission issues
   - Disk space problems
   - Invalid file paths
@@ -136,26 +143,31 @@ The script creates detailed logs in the `logs/` folder:
 ## Examples
 
 1. Process existing extracted files:
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract no -Sort onefolder
 ```
 
 2. Extract and sort by year with album tracking:
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract yes -GenerateAlbums yes -Sort years
 ```
 
 3. Fix metadata only (no sorting):
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract yes -Sort no
 ```
 
 4. Export generated albums:
+
 ```powershell
 .\fix-google-takeout.ps1 -ExportAlbum yes
 ```
 
 5. Clean up all processing files:
+
 ```powershell
 .\fix-google-takeout.ps1 -Clean yes
 ```

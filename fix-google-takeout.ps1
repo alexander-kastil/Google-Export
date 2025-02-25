@@ -18,8 +18,8 @@ param (
     [ValidateSet('no', 'years', 'onefolder')]
     [string]$Sort = 'onefolder',
     
-    [ValidatePattern('^(yes|no|\S.+)$')]
-    [string]$ExportAlbum = $null,
+    [ValidateSet('yes', 'no')]
+    [string]$ExportAlbum = 'no',
 
     [ValidateSet('yes')]
     [string]$Clean = 'no'
@@ -61,8 +61,7 @@ function Write-JsonError {
 $script:extractedPath = Join-Path -Path $PSScriptRoot -ChildPath "extracted"
 $script:outputPath = Join-Path -Path $PSScriptRoot -ChildPath "output"
 $script:logsPath = Join-Path -Path $PSScriptRoot -ChildPath "logs"
-$script:albumsPath = Join-Path -Path $PSScriptRoot -ChildPath "albums"
-$script:exportPath = Join-Path -Path $PSScriptRoot -ChildPath "exported-albums"
+$script:albumsPath = Join-Path -Path $script:outputPath -ChildPath "albums"
 $script:metadataErrorsPath = Join-Path -Path $script:logsPath -ChildPath "metadata.errors.json"
 $script:sortingErrorsPath = Join-Path -Path $script:logsPath -ChildPath "sorting.errors.json"
 $script:duplicateErrorsPath = Join-Path -Path $script:logsPath -ChildPath "duplicate.errors.json"
@@ -101,7 +100,7 @@ Parameters:
 
 -GenerateAlbums yes|no : Generate album JSON files (default: no)
                         Requires albums.txt file with one album name per line
-                        Creates album structure in ./albums folder
+                        Creates album structure in output/albums folder
 
 -Sort no|years|onefolder : Control how files are organized (default: onefolder)
                         'no': Leave files in place after metadata fix
@@ -109,22 +108,22 @@ Parameters:
                                 Each year folder has pictures/ and movies/
                         'onefolder': Sort all files into pictures/ and movies/
 
--ExportAlbum yes|no   : Export photos from albums (must be used alone)
-                        Exports all albums to ./exported-albums
+-ExportAlbum yes|no   : Export photos from albums (default: no)
+                        Exports albums to output/albums/NAME
                         Each album gets its own pictures/ and movies/ folders
 
 -Clean yes            : Clean up ALL processing folders (must be used alone)
-                        Removes: extracted/, output/, logs/, albums/,
-                                exported-albums/, ExifTool/
+                        Removes: extracted/, output/, logs/, ExifTool/
 
 Output Folders:
 -------------
 ./extracted          : Contains extracted Google Takeout files
-./output            : Contains organized photos and videos
-./logs              : Contains error logs and processing reports
-./albums            : Contains generated album metadata
-./exported-albums   : Contains exported album photos
-./ExifTool          : Contains ExifTool installation (if installed)
+./output/           : Contains organized photo collection
+  ├── pictures/     : All image files (.jpg, .heic, .png)
+  ├── movies/       : All video files (.mp4)
+  └── albums/       : Generated and exported album content
+./logs/             : Contains error logs and processing reports
+./ExifTool/         : Contains ExifTool installation (if installed)
 
 Error Logs:
 ----------
@@ -162,7 +161,8 @@ function Initialize-Folders {
         $script:extractedPath,
         $script:logsPath,
         (Join-Path $script:outputPath "pictures"),
-        (Join-Path $script:outputPath "movies")
+        (Join-Path $script:outputPath "movies"),
+        $script:albumsPath
     )
 
     foreach ($folder in $foldersToCreate) {
@@ -196,8 +196,6 @@ function Remove-TempFiles {
         $script:extractedPath,
         $script:outputPath,
         $script:logsPath,
-        $script:albumsPath,
-        $script:exportPath,
         (Join-Path $PSScriptRoot "ExifTool")
     )
 
@@ -406,7 +404,7 @@ try {
     # Handle album export if requested
     if ($ExportAlbum -eq 'yes') {
         Write-Host "`nExporting albums..." -ForegroundColor Cyan
-        if (-not (Export-Album -AlbumsPath $script:albumsPath -ExportPath $script:exportPath)) {
+        if (-not (Export-Album -AlbumsPath $script:albumsPath -OutputPath $script:outputPath)) {
             throw "Failed to export albums"
         }
     }

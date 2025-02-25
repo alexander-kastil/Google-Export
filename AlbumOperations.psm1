@@ -123,13 +123,10 @@ function Export-Album {
         [Parameter(Mandatory)]
         [string]$AlbumsPath,
         [Parameter(Mandatory)]
-        [string]$ExportPath
+        [string]$OutputPath
     )
 
-    # Create export directory
-    $null = New-Item -ItemType Directory -Path $ExportPath -Force
-
-    # Get list of all albums to process
+    # Process each album in the albums path
     $albumsToProcess = Get-ChildItem -Path $AlbumsPath -Directory | ForEach-Object { 
         $_.Name 
     }
@@ -152,14 +149,11 @@ function Export-Album {
             continue
         }
 
-        $albumExportPath = Join-Path $ExportPath $album
-        $null = New-Item -ItemType Directory -Path $albumExportPath -Force
-        
-        # Create media folders
-        $mediaFolders = New-MediaFolders -BasePath $albumExportPath
+        # Create media folders within the album folder
+        $mediaFolders = New-MediaFolders -BasePath $albumFolderPath
 
         $albumContent | ForEach-Object {
-            $sourcePath = Join-Path $PSScriptRoot $_.fullPath
+            $sourcePath = Join-Path $OutputPath $_.fullPath
             if (Test-Path $sourcePath) {
                 $subFolder = Get-MediaType -Extension ([System.IO.Path]::GetExtension($_.name))
                 $destFolder = if ($subFolder -eq "movies") { $mediaFolders.MoviesPath } else { $mediaFolders.PicturesPath }
