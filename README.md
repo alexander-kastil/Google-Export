@@ -90,8 +90,6 @@ Basic usage (recommended for most users):
   - extracted/
   - output/
   - logs/
-  - albums/
-  - exported-albums/
   - ExifTool/
 
 ## Output Structure

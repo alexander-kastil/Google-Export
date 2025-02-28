@@ -75,72 +75,83 @@ function Move-ToYearFolders {
         $scriptRoot = $PSScriptRoot
 
         $files | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
-            $current = [System.Threading.Interlocked]::Increment($using:counter)
-            $fileName = [System.IO.Path]::GetFileName($_.FullName)
-            Write-ProgressStatus -Current $current -Total $using:totalFiles -Operation "Sorting" -ItemName $fileName
-
-            $currentFolder = Split-Path (Split-Path $_.FullName -Parent) -Leaf
-            $exifData = exiftool -json $_.FullName | ConvertFrom-Json
-            
-            if ($exifData.CreateDate) {
-                $dateTime = [DateTime]::ParseExact(
-                    $exifData.CreateDate,
-                    "yyyy:MM:dd HH:mm:ss",
-                    [System.Globalization.CultureInfo]::InvariantCulture
-                )
-                $yearValue = $dateTime.Year.ToString()
-                $yearPath = Join-Path $using:DestinationRoot $yearValue
-                $null = New-Item -ItemType Directory -Path $yearPath -Force
+            try {
+                Import-Module -Name "$using:scriptRoot\SharedOperations.psm1" -Force
                 
-                # Create media folders and determine destination
-                $mediaFolders = New-MediaFolders -BasePath $yearPath
-                $subFolder = Get-MediaType -Extension $_.Extension
-                $yearSubPath = if ($subFolder -eq "movies") { $mediaFolders.MoviesPath } else { $mediaFolders.PicturesPath }
+                $current = [System.Threading.Interlocked]::Increment($using:counter)
+                $fileName = [System.IO.Path]::GetFileName($_.FullName)
+                Write-ProgressStatus -Current $current -Total $using:totalFiles -Operation "Sorting" -ItemName $fileName
 
-                $destFileName = $_.Name
-                $destPath = Join-Path $yearSubPath $destFileName
-
-                # Handle duplicates
-                if (Test-Path $destPath) {
-                    $fileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-                    $extension = [System.IO.Path]::GetExtension($_.Name)
-                    $random = Get-Random -Maximum 99999
-                    $newFileName = "${fileNameWithoutExt}_duplicate_${random}${extension}"
-                    $destPath = Join-Path $yearSubPath $newFileName
+                $currentFolder = Split-Path (Split-Path $_.FullName -Parent) -Leaf
+                $exifData = exiftool -json $_.FullName | ConvertFrom-Json
+                
+                if ($exifData.CreateDate) {
+                    $dateTime = [DateTime]::ParseExact(
+                        $exifData.CreateDate,
+                        "yyyy:MM:dd HH:mm:ss",
+                        [System.Globalization.CultureInfo]::InvariantCulture
+                    )
+                    $yearValue = $dateTime.Year.ToString()
+                    $yearPath = Join-Path $using:DestinationRoot $yearValue
+                    $null = New-Item -ItemType Directory -Path $yearPath -Force
                     
-                    $duplicateInfo = [PSCustomObject]@{
-                        Path = $_.FullName
-                        Message = "Duplicate file renamed to: $newFileName"
-                    }
-                    ($using:dupBag).Add($duplicateInfo)
-                }
+                    # Create media folders and determine destination
+                    $mediaFolders = New-MediaFolders -BasePath $yearPath
+                    $subFolder = Get-MediaType -Extension $_.Extension
+                    $yearSubPath = if ($subFolder -eq "movies") { $mediaFolders.MoviesPath } else { $mediaFolders.PicturesPath }
 
-                # Move file
-                $null = Move-Item -Path $_.FullName -Destination $destPath -Force
+                    $destFileName = $_.Name
+                    $destPath = Join-Path $yearSubPath $destFileName
 
-                # Track album if enabled
-                if ($using:TrackAlbums) {
-                    $folderNameLower = $currentFolder.ToLower()
-                    if (($using:Albums).ContainsKey($folderNameLower)) {
-                        $relativePath = $yearSubPath.Replace($using:DestinationRoot, '').TrimStart('\')
-                        $fileName = [System.IO.Path]::GetFileName($destPath)
+                    # Handle duplicates
+                    if (Test-Path $destPath) {
+                        $fileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                        $extension = [System.IO.Path]::GetExtension($_.Name)
+                        $random = Get-Random -Maximum 99999
+                        $newFileName = "${fileNameWithoutExt}_duplicate_${random}${extension}"
+                        $destPath = Join-Path $yearSubPath $newFileName
                         
-                        $albumInfo = [PSCustomObject]@{
-                            Album = $folderNameLower
-                            Item = [PSCustomObject]@{
-                                name = $fileName
-                                relativePath = $relativePath
-                                fullPath = Join-Path $relativePath $fileName
-                            }
+                        $duplicateInfo = [PSCustomObject]@{
+                            Path = $_.FullName
+                            Message = "Duplicate file renamed to: $newFileName"
                         }
-                        ($using:albumBag).Add($albumInfo)
+                        ($using:dupBag).Add($duplicateInfo)
                     }
+
+                    # Move file
+                    $null = Move-Item -Path $_.FullName -Destination $destPath -Force
+
+                    # Track album if enabled
+                    if ($using:TrackAlbums) {
+                        $folderNameLower = $currentFolder.ToLower()
+                        if (($using:Albums).ContainsKey($folderNameLower)) {
+                            $relativePath = $yearSubPath.Replace($using:DestinationRoot, '').TrimStart('\')
+                            $fileName = [System.IO.Path]::GetFileName($destPath)
+                            
+                            $albumInfo = [PSCustomObject]@{
+                                Album = $folderNameLower
+                                Item = [PSCustomObject]@{
+                                    name = $fileName
+                                    relativePath = $relativePath
+                                    fullPath = Join-Path $relativePath $fileName
+                                }
+                            }
+                            ($using:albumBag).Add($albumInfo)
+                        }
+                    }
+                }
+                else {
+                    $errorInfo = [PSCustomObject]@{
+                        Path = $_.FullName
+                        Message = "No date found in EXIF data"
+                    }
+                    ($using:errorBag).Add($errorInfo)
                 }
             }
-            else {
+            catch {
                 $errorInfo = [PSCustomObject]@{
                     Path = $_.FullName
-                    Message = "No date found in EXIF data"
+                    Message = "Error moving file: $_"
                 }
                 ($using:errorBag).Add($errorInfo)
             }
@@ -200,8 +211,7 @@ function Move-ToOneFolder {
 
         $files | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
             try {
-                # Import required module in the parallel scope
-                Import-Module "$using:scriptRoot\SharedOperations.psm1"
+                Import-Module -Name "$using:scriptRoot\SharedOperations.psm1" -Force
                 
                 $current = [System.Threading.Interlocked]::Increment($using:counter)
                 $fileName = [System.IO.Path]::GetFileName($_.FullName)
