@@ -25,11 +25,21 @@ param (
     [string]$Clean = 'no'
 )
 
+# Check PowerShell version
+$requiredVersion = [Version]"7.0"
+$currentVersion = $PSVersionTable.PSVersion
+if ($currentVersion -lt $requiredVersion) {
+    Write-Error "This script requires PowerShell $requiredVersion or later. Current version: $currentVersion`nPlease install PowerShell Core from: https://github.com/PowerShell/PowerShell#get-powershell"
+    exit 1
+}
+
 # Enable information output
 $InformationPreference = 'Continue'
 
-# Set up output formatting
-$PSStyle.Progress.View = 'Classic'
+# Set up output formatting - handle older PowerShell versions
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSStyle.Progress.View = 'Classic'
+}
 $ProgressPreference = 'Continue'
 
 # Import required modules
@@ -37,13 +47,6 @@ Import-Module $PSScriptRoot\FileOperations.psm1
 Import-Module $PSScriptRoot\MetadataOperations.psm1
 Import-Module $PSScriptRoot\AlbumOperations.psm1
 Import-Module $PSScriptRoot\SharedOperations.psm1
-
-# Version check
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    Write-Error "This script requires PowerShell 7.0 or later. Current version: $($PSVersionTable.PSVersion)"
-    Write-Host "Please install PowerShell 7+ from: https://github.com/PowerShell/PowerShell/releases"
-    exit 1
-}
 
 function Write-JsonError {
     param (

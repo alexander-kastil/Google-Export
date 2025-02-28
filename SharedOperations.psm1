@@ -21,7 +21,11 @@ function Get-MediaType {
         [string]$Extension
     )
     
-    return if ($Extension.ToLower() -eq '.mp4') { "movies" } else { "pictures" }
+    if ($Extension.ToLower() -eq '.mp4') {
+        return "movies"
+    } else {
+        return "pictures"
+    }
 }
 
 function Write-ProgressStatus {
