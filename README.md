@@ -25,6 +25,8 @@ This tool addresses all these issues and provides flexible organization options.
 
 Basic usage (recommended for most users):
 
+- Copy the zip files from Google Takeout to the root of this project
+
 ```powershell
 .\fix-google-takeout.ps1 -Extract yes -InstallExif yes -Sort onefolder
 ```
@@ -176,6 +178,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Credits
 
-This project was prompted by [Alexander Kastil](https://www.linkedin.com/in/alexander-kastil-3bb26511a/) and implemented using the Agentic Preview of GitHub Copilot Edits with Claude 3.5 Sonnet as the underlying AI model. It is dedicated to Giro, a beloved Galgo Espanol rescue, who passed away on 2024-08-05 at approximately 14 years of age.
+This project was prompted by [Alexander Kastil](https://www.linkedin.com/in/alexander-kastil-3bb26511a/) and implemented using the Agentic Preview of GitHub Copilot Edits with Claude 3.5 Sonnet as the underlying AI model. It is dedicated to Giro, my beloved Galgo Espanol, who passed away on 2024-08-05 at approximately 14 years of age.
 
 ![giro](/sample_export/giro.jpg)
